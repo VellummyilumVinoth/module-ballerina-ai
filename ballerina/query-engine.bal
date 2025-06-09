@@ -94,11 +94,12 @@ public isolated class VectorIndex {
     }
 
     public isolated function index(Document[] documents) returns Error? {
+        VectorEntry[] entries = [];
         foreach var document in documents {
             float[] embedding = check self.embeddingModel.embed(document.content);
-            VectorEntry entry = {embedding, document};
-            check self.vectorStore.add(entry);
+            entries.push({embedding, document});
         }
+        check self.vectorStore.add(entries);
     }
 
     isolated function getRetriever() returns Retriever {
@@ -127,7 +128,7 @@ public type DocumentMatch record {|
 |};
 
 public type VectorStore isolated object {
-    public isolated function add(VectorEntry entry) returns Error?;
+    public isolated function add(VectorEntry[] entries) returns Error?;
     public isolated function query(float[] vector, int topK = 5) returns VectorMatch[]|Error;
 };
 
