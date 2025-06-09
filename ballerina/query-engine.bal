@@ -144,10 +144,9 @@ public isolated class Retriever {
         self.embeddingModel = embeddingModel;
     }
 
-    // Should we move topK to config ?
-    public isolated function retrieve(string query, int similarityTopK = 3) returns DocumentMatch[]|Error {
+    public isolated function retrieve(string query) returns DocumentMatch[]|Error {
         float[] queryVec = check self.embeddingModel.embed(query);
-        VectorMatch[] matches = check self.vectorStore.query(queryVec, similarityTopK);
+        VectorMatch[] matches = check self.vectorStore.query(queryVec);
         return from VectorMatch 'match in matches
             select {document: 'match.document, score: 'match.score};
     }
