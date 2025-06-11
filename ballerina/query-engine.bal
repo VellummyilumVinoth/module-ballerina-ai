@@ -83,6 +83,16 @@ public isolated class DefaultPromptBuilder {
 }
 
 public isolated class VectorIndex {
+    // Need hybrid index or seperate vector store (one for dense and one for sparse)? then we need to change the init API
+    // If we have seperate vector store we need to provide seperate embedding modesl for each vector store (one for dense one for sparse); 
+    // How to assosiate vector store with embedding model?
+
+    // Or do we need to compe up with hierarchy of vector indexes?
+    // VectorIndex
+    // - HybridVectorIndex
+    // - DefaultVectorIndex
+    //      - SparseVectorIndex
+    //      - DenseVectorIndex
     private final VectorStore vectorStore;
     private final EmbeddingProvider embeddingModel;
     private final Retriever retriever;
@@ -96,8 +106,10 @@ public isolated class VectorIndex {
     public isolated function index(Document[] documents) returns Error? {
         VectorEntry[] entries = [];
         foreach var document in documents {
-            float[] embedding = check self.embeddingModel.embed(document.content);
-            entries.push({embedding, document});
+            float[]|SparseVector embedding = check self.embeddingModel.embed(document.content);
+            VectorEntry entry = {embedding, document};
+            // generate sparse vectors
+            entries.push(entry);
         }
         check self.vectorStore.add(entries);
     }
@@ -113,7 +125,7 @@ public type Document record {
 };
 
 public type VectorEntry record {|
-    float[] embedding;
+    float[]|SparseVector embedding;
     Document document;
 |};
 
@@ -129,11 +141,11 @@ public type DocumentMatch record {|
 
 public type VectorStore isolated object {
     public isolated function add(VectorEntry[] entries) returns Error?;
-    public isolated function query(float[] vector, int topK = 5) returns VectorMatch[]|Error;
+    public isolated function query(QueryVector query) returns VectorMatch[]|Error;
 };
 
 public type EmbeddingProvider isolated object {
-    public isolated function embed(string document) returns float[]|Error;
+    public isolated function embed(string document) returns float[]|SparseVector|Error;
 };
 
 public isolated class Retriever {
@@ -146,9 +158,27 @@ public isolated class Retriever {
     }
 
     public isolated function retrieve(string query) returns DocumentMatch[]|Error {
-        float[] queryVec = check self.embeddingModel.embed(query);
-        VectorMatch[] matches = check self.vectorStore.query(queryVec);
+        float[]|SparseVector embedding = check self.embeddingModel.embed(query);
+        QueryVector vector = embedding is float[] ? {embedding, sparseVectorOrQuery: query} : {sparseVectorOrQuery: embedding};
+        VectorMatch[] matches = check self.vectorStore.query(vector);
         return from VectorMatch 'match in matches
             select {document: 'match.document, score: 'match.score};
     }
 }
+
+public type SparseVector record {
+    int[] indices;
+    float[] values;
+};
+
+public enum VectorStoreQueryMode {
+    DENSE,
+    SPARSE,
+    HYBRID
+};
+
+// keeping the embedding and sparse vector seperate so we can do hybrid search.
+public type QueryVector record {
+    float[] embedding?;
+    SparseVector|string sparseVectorOrQuery?;
+};
