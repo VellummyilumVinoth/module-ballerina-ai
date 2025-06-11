@@ -106,7 +106,7 @@ public isolated class VectorIndex {
     public isolated function index(Document[] documents) returns Error? {
         VectorEntry[] entries = [];
         foreach var document in documents {
-            float[]|SparseVector embedding = check self.embeddingModel.embed(document.content);
+            float[]|SparseVector|Embedding embedding = check self.embeddingModel.embed(document.content);
             VectorEntry entry = {embedding, document};
             // generate sparse vectors
             entries.push(entry);
@@ -125,7 +125,7 @@ public type Document record {
 };
 
 public type VectorEntry record {|
-    float[]|SparseVector embedding;
+    Vector|SparseVector|Embedding embedding;
     Document document;
 |};
 
@@ -141,11 +141,18 @@ public type DocumentMatch record {|
 
 public type VectorStore isolated object {
     public isolated function add(VectorEntry[] entries) returns Error?;
-    public isolated function query(QueryVector query) returns VectorMatch[]|Error;
+    public isolated function query(Vector|SparseVector|Embedding query) returns VectorMatch[]|Error;
 };
 
+public type Vector float[];
+
+public type Embedding record {|
+    float[] dense;
+    SparseVector sparse;
+|};
+
 public type EmbeddingProvider isolated object {
-    public isolated function embed(string document) returns float[]|SparseVector|Error;
+    public isolated function embed(string document) returns Vector|SparseVector|Embedding|Error;
 };
 
 public isolated class Retriever {
@@ -158,9 +165,8 @@ public isolated class Retriever {
     }
 
     public isolated function retrieve(string query) returns DocumentMatch[]|Error {
-        float[]|SparseVector embedding = check self.embeddingModel.embed(query);
-        QueryVector vector = embedding is float[] ? {embedding, sparseVectorOrQuery: query} : {sparseVectorOrQuery: embedding};
-        VectorMatch[] matches = check self.vectorStore.query(vector);
+        Vector|SparseVector|Embedding embedding = check self.embeddingModel.embed(query);
+        VectorMatch[] matches = check self.vectorStore.query(embedding);
         return from VectorMatch 'match in matches
             select {document: 'match.document, score: 'match.score};
     }
@@ -168,17 +174,11 @@ public isolated class Retriever {
 
 public type SparseVector record {
     int[] indices;
-    float[] values;
+    Vector values;
 };
 
 public enum VectorStoreQueryMode {
     DENSE,
     SPARSE,
     HYBRID
-};
-
-// keeping the embedding and sparse vector seperate so we can do hybrid search.
-public type QueryVector record {
-    float[] embedding?;
-    SparseVector|string sparseVectorOrQuery?;
 };
