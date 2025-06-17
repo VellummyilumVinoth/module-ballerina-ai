@@ -26,25 +26,30 @@ public isolated class DocumentByLineSplitter {
     }
 }
 
-public isolated class QueryEngine {
+public isolated class Rag {
     private final ModelProvider model;
-    private final VectorIndex index;
-    private final PromptBuilder promptBuilder;
+    private final VectorKnowledgeBase knowledgeBase;
+    private final RagPromptBuilder promptBuilder;
 
-    public isolated function init(ModelProvider model, VectorIndex vectorIndex,
-            PromptBuilder promptBuilder = new DefaultPromptBuilder()) {
+    public isolated function init(ModelProvider model = new Wso2ModelProvider(),
+            VectorKnowledgeBase knowledgeBase = new VectorKnowledgeBase(new InMemoryVectorStore(), new Wso2EmbeddingProvider()),
+            RagPromptBuilder promptBuilder = new DefaultRagPromptBuilder()) {
         self.model = model;
-        self.index = vectorIndex;
+        self.knowledgeBase = knowledgeBase;
         self.promptBuilder = promptBuilder;
     }
 
     public isolated function query(string query) returns string|Error {
-        DocumentMatch[] context = check self.index.getRetriever().retrieve(query);
+        DocumentMatch[] context = check self.knowledgeBase.getRetriever().retrieve(query);
         // later when we allow re-reankers we can use the score in the document match
         Prompt prompt = self.promptBuilder.build(context.'map(ctx => ctx.document), query);
         ChatMessage[] messages = self.mapPromptToChatMessages(prompt);
         ChatAssistantMessage response = check self.model->chat(messages, []);
         return response.content ?: error Error("Unable to obtain valid answer");
+    }
+
+    public isolated function ingest(Document[] documents) returns Error? {
+        return self.knowledgeBase.index(documents);
     }
 
     private isolated function mapPromptToChatMessages(Prompt prompt) returns ChatMessage[] {
@@ -61,17 +66,21 @@ public isolated class QueryEngine {
     }
 };
 
+# Description.
+#
+# + systemPrompt - field description  
+# + userPrompt - field description
 public type Prompt record {|
     string systemPrompt?;
-    string userPrompt?;
+    string userPrompt;
 |};
 
-public type PromptBuilder isolated object {
+public type RagPromptBuilder isolated object {
     public isolated function build(Document[] context, string query) returns Prompt;
 };
 
-public isolated class DefaultPromptBuilder {
-    *PromptBuilder;
+public isolated class DefaultRagPromptBuilder {
+    *RagPromptBuilder;
 
     public isolated function build(Document[] context, string query) returns Prompt {
         // following is a sample implementation
@@ -82,31 +91,21 @@ public isolated class DefaultPromptBuilder {
     }
 }
 
-public isolated class VectorIndex {
-    // Need hybrid index or seperate vector store (one for dense and one for sparse)? then we need to change the init API
-    // If we have seperate vector store we need to provide seperate embedding modesl for each vector store (one for dense one for sparse); 
-    // How to assosiate vector store with embedding model?
-
-    // Or do we need to compe up with hierarchy of vector indexes?
-    // VectorIndex
-    // - HybridVectorIndex
-    // - DefaultVectorIndex
-    //      - SparseVectorIndex
-    //      - DenseVectorIndex
+public isolated class VectorKnowledgeBase {
     private final VectorStore vectorStore;
     private final EmbeddingProvider embeddingModel;
     private final Retriever retriever;
 
-    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel, Retriever retriever) {
+    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel) {
         self.embeddingModel = embeddingModel;
-        self.retriever = retriever;
         self.vectorStore = vectorStore;
+        self.retriever = new (vectorStore, embeddingModel);
     }
 
     public isolated function index(Document[] documents) returns Error? {
         VectorEntry[] entries = [];
         foreach var document in documents {
-            float[]|SparseVector|Embedding embedding = check self.embeddingModel.embed(document.content);
+            float[]|SparseVector|Embedding embedding = check self.embeddingModel->embed(document.content);
             VectorEntry entry = {embedding, document};
             // generate sparse vectors
             entries.push(entry);
@@ -151,9 +150,17 @@ public type Embedding record {|
     SparseVector sparse;
 |};
 
-public type EmbeddingProvider isolated object {
-    public isolated function embed(string document) returns Vector|SparseVector|Embedding|Error;
+public type EmbeddingProvider isolated client object {
+    isolated remote function embed(string document) returns Vector|SparseVector|Embedding|Error;
 };
+
+public isolated client class Wso2EmbeddingProvider {
+    *EmbeddingProvider;
+
+    isolated remote function embed(string document) returns Vector|SparseVector|Embedding|Error {
+        return [];
+    }
+}
 
 public isolated class Retriever {
     private final VectorStore vectorStore;
@@ -165,7 +172,7 @@ public isolated class Retriever {
     }
 
     public isolated function retrieve(string query) returns DocumentMatch[]|Error {
-        Vector|SparseVector|Embedding embedding = check self.embeddingModel.embed(query);
+        Vector|SparseVector|Embedding embedding = check self.embeddingModel->embed(query);
         VectorMatch[] matches = check self.vectorStore.query(embedding);
         return from VectorMatch 'match in matches
             select {document: 'match.document, score: 'match.score};
@@ -182,3 +189,66 @@ public enum VectorStoreQueryMode {
     SPARSE,
     HYBRID
 };
+
+public isolated class InMemoryVectorStore {
+    *VectorStore;
+    private final VectorEntry[] entries = [];
+
+    public isolated function add(VectorEntry[] entries) returns Error? {
+        foreach VectorEntry entry in entries {
+            if entry.embedding !is Vector {
+                return error Error("InMemoryVectorStore implementation only supports dense vectors");
+            }
+        }
+        readonly & VectorEntry[] clonedEntries = entries.cloneReadOnly();
+        lock {
+            self.entries.push(...clonedEntries);
+        }
+    }
+
+    public isolated function query(Vector|SparseVector|Embedding query) returns VectorMatch[]|Error {
+        if query !is Vector {
+            return error Error("InMemoryVectorStore implementation only supports dense vectors");
+        }
+
+        lock {
+            VectorMatch[] results = [];
+            foreach var entry in self.entries {
+                float similarity = self.cosineSimilarity(query.clone(), <Vector>entry.embedding);
+                results.push({document: entry.document, embedding: entry.embedding, score: similarity});
+            }
+            var sorted = from var entry in results
+                order by entry.score
+                select entry;
+            return sorted.clone();
+        }
+    }
+
+    isolated function cosineSimilarity(Vector a, Vector b) returns float {
+        if a.length() != b.length() {
+            return 0.0;
+        }
+
+        float dot = 0.0;
+        float normA = 0.0;
+        float normB = 0.0;
+
+        foreach int i in 0 ..< a.length() {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+
+        float denom = normA.sqrt() * normB.sqrt();
+        return denom == 0.0 ? 0.0 : dot / denom;
+    }
+}
+
+public isolated client class Wso2ModelProvider {
+    *ModelProvider;
+
+    isolated remote function chat(ChatMessage[] messages, ChatCompletionFunctions[] tools, string? stop)
+    returns ChatAssistantMessage|LlmError {
+        return {role: ASSISTANT, content: "Dummy response"};
+    }
+}
