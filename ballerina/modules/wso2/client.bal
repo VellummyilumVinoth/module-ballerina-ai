@@ -23,6 +23,20 @@ public isolated client class Client {
         self.clientEp = check new (serviceUrl, httpClientConfig);
     }
 
+    # Get a vector representation of a given input that can be easily consumed by machine learning models and algorithms.
+    #
+    # + headers - Headers to be sent with the request 
+    # + return - OK 
+    @display {label: "Generate Embeddings"}
+    resource isolated function post embeddings(EmbeddingRequest payload, EmbeddingsCreateHeaders headers = {}) returns EmbeddingResponse|error {
+        string resourcePath = string `/embeddings`;
+        map<string|string[]> httpHeaders = http:getHeaderMap(headers);
+        http:Request request = new;
+        json jsonBody = jsondata:toJson(payload);
+        request.setPayload(jsonBody, "application/json");
+        return self.clientEp->post(resourcePath, request, httpHeaders);
+    }
+
     # + headers - Headers to be sent with the request 
     # + return - OK 
     resource isolated function post chat/completions(CreateChatCompletionRequest payload, ChatCompletionsHeaders headers = {}) returns CreateChatCompletionResponse|error {

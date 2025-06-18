@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import ai.azure.openai.chat;
+import ai.wso2;
 
 public type ChunkStratery isolated object {
     public isolated function chunk(string content) returns Document[]|Error;
@@ -34,10 +34,10 @@ public isolated class Rag {
     private final RagPromptBuilder promptBuilder;
 
     public isolated function init(ModelProvider? model = (),
-            VectorKnowledgeBase knowledgeBase = new VectorKnowledgeBase(new InMemoryVectorStore(), new Wso2EmbeddingProvider()),
+            VectorKnowledgeBase? knowledgeBase = (),
             RagPromptBuilder promptBuilder = new DefaultRagPromptBuilder()) returns Error? {
         self.model = model ?: check getDefaultModelProvider();
-        self.knowledgeBase = knowledgeBase;
+        self.knowledgeBase = knowledgeBase ?: check getDefaultKnowledgeBase();
         self.promptBuilder = promptBuilder;
     }
 
@@ -158,9 +158,23 @@ public type EmbeddingProvider isolated client object {
 
 public isolated client class Wso2EmbeddingProvider {
     *EmbeddingProvider;
+    private final wso2:Client embeddingClient;
+
+    public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
+       wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
+        if embeddingClient is error {
+            return error Error("Failed to initialize Wso2ModelProvider", embeddingClient);
+        }
+        self.embeddingClient = embeddingClient;
+    }
 
     isolated remote function embed(string document) returns Vector|SparseVector|Embedding|Error {
-        return [];
+        wso2:EmbeddingRequest request = {input: document};
+        wso2:EmbeddingResponse|error response = self.embeddingClient->/embeddings.post(request);
+        if response is error {
+            return error Error("Error generating embedding for provided document", response);
+        }
+        return response.data[0].embedding;
     }
 }
 
@@ -261,10 +275,10 @@ configurable Wso2ModelProviderConfig? wso2ModelProviderConfig = ();
 
 public isolated client class Wso2ModelProvider {
     *ModelProvider;
-    private final chat:Client llmClient;
+    private final wso2:Client llmClient;
 
     public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
-        chat:Client|error llmClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
+        wso2:Client|error llmClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
         if llmClient is error {
             return error Error("Failed to initialize Wso2ModelProvider", llmClient);
         }
@@ -273,11 +287,11 @@ public isolated client class Wso2ModelProvider {
 
     isolated remote function chat(ChatMessage[] messages, ChatCompletionFunctions[] tools, string? stop = ())
     returns ChatAssistantMessage|LlmError {
-        chat:CreateChatCompletionRequest request = {stop, messages: self.mapToChatCompletionRequestMessage(messages)};
+        wso2:CreateChatCompletionRequest request = {stop, messages: self.mapToChatCompletionRequestMessage(messages)};
         if tools.length() > 0 {
             request.functions = tools;
         }
-        chat:CreateChatCompletionResponse|error response = self.llmClient->/chat/completions.post(request);
+        wso2:CreateChatCompletionResponse|error response = self.llmClient->/chat/completions.post(request);
         if response is error {
             return error LlmConnectionError("Error while connecting to the model", response);
         }
@@ -286,21 +300,21 @@ public isolated client class Wso2ModelProvider {
         if choices.length() == 0 {
             return error LlmInvalidResponseError("Empty response from the model when using function call API");
         }
-        chat:ChatCompletionResponseMessage? message = choices[0].message;
+        wso2:ChatCompletionResponseMessage? message = choices[0].message;
         ChatAssistantMessage chatAssistantMessage = {role: ASSISTANT, content: message?.content};
-        chat:ChatCompletionFunctionCall? functionCall = message?.functionCall;
-        if functionCall is chat:ChatCompletionFunctionCall {
+        wso2:ChatCompletionFunctionCall? functionCall = message?.functionCall;
+        if functionCall is wso2:ChatCompletionFunctionCall {
             chatAssistantMessage.toolCalls = [check self.mapToFunctionCall(functionCall)];
         }
         return chatAssistantMessage;
     }
 
     private isolated function mapToChatCompletionRequestMessage(ChatMessage[] messages)
-        returns chat:ChatCompletionRequestMessage[] {
-        chat:ChatCompletionRequestMessage[] chatCompletionRequestMessages = [];
+        returns wso2:ChatCompletionRequestMessage[] {
+        wso2:ChatCompletionRequestMessage[] chatCompletionRequestMessages = [];
         foreach ChatMessage message in messages {
             if message is ChatAssistantMessage {
-                chat:ChatCompletionRequestMessage assistantMessage = {role: ASSISTANT};
+                wso2:ChatCompletionRequestMessage assistantMessage = {role: ASSISTANT};
                 FunctionCall[]? toolCalls = message.toolCalls;
                 if toolCalls is FunctionCall[] {
                     assistantMessage["function_call"] = {
@@ -319,7 +333,7 @@ public isolated client class Wso2ModelProvider {
         return chatCompletionRequestMessages;
     }
 
-    private isolated function mapToFunctionCall(chat:ChatCompletionFunctionCall functionCall)
+    private isolated function mapToFunctionCall(wso2:ChatCompletionFunctionCall functionCall)
     returns FunctionCall|LlmError {
         do {
             json jsonArgs = check functionCall.arguments.fromJsonString();
@@ -337,4 +351,16 @@ isolated function getDefaultModelProvider() returns Wso2ModelProvider|Error {
         return error Error("Set the WSO2 model provider config in toml file");
     }
     return new Wso2ModelProvider(config);
+}
+
+isolated function getDefaultKnowledgeBase() returns VectorKnowledgeBase|Error {
+    Wso2ModelProviderConfig? config = wso2ModelProviderConfig;
+    if config is () {
+        return error Error("Set the WSO2 model provider config in toml file");
+    }
+    EmbeddingProvider|Error wso2EmbeddingProvider = new Wso2EmbeddingProvider(config);
+    if wso2EmbeddingProvider is Error {
+        return error Error("error creatating default vector konwledge base");
+    }
+    return new VectorKnowledgeBase(new InMemoryVectorStore(), wso2EmbeddingProvider);
 }

@@ -10,6 +10,36 @@ servers:
     port:
       default: "9094"
 paths:
+  /embeddings:
+    post:
+      summary: Get a vector representation of a given input that can be easily consumed
+        by machine learning models and algorithms.
+      operationId: embeddings_create
+      parameters:
+      - name: x-jwt-assertion
+        in: header
+        required: false
+        style: simple
+        explode: false
+        schema:
+          type: string
+          nullable: true
+        x-ballerina-name: xJwtAssertion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmbeddingRequest'
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingResponse'
+      x-ballerina-display:
+        label: Generate Embeddings
   /chat/completions:
     post:
       operationId: chatCompletions
@@ -809,6 +839,86 @@ components:
         mapping:
           text: '#/components/schemas/chatCompletionRequestMessageContentPartText'
           image_url: '#/components/schemas/chatCompletionRequestMessageContentPartImage'
+    EmbeddingResponse:
+      required:
+      - data
+      - model
+      - object
+      - usage
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            required:
+            - embedding
+            - index
+            - object
+            type: object
+            properties:
+              index:
+                type: integer
+              embedding:
+                type: array
+                items:
+                  type: number
+                  format: float
+              object:
+                type: string
+        usage:
+          required:
+          - prompt_tokens
+          - total_tokens
+          type: object
+          properties:
+            prompt_tokens:
+              type: integer
+              x-ballerina-name: promptTokens
+            total_tokens:
+              type: integer
+              x-ballerina-name: totalTokens
+        model:
+          type: string
+        object:
+          type: string
+    EmbeddingRequest:
+      required:
+      - input
+      type: object
+      properties:
+        input:
+          description: |-
+            Input text to get embeddings for, encoded as a string. To get embeddings for multiple inputs in a single request, pass an array of strings. Each input must not exceed 2048 tokens in length.
+            Unless you are embedding code, we suggest replacing newlines (\n) in your input with a single space, as we have observed inferior results when newlines are present.
+          oneOf:
+          - type: string
+            nullable: true
+            example: This is a test.
+            default: ""
+          - maxItems: 2048
+            minItems: 1
+            type: array
+            items:
+              minLength: 1
+              type: string
+              nullable: false
+              example: This is a test.
+        user:
+          type: string
+          description: "A unique identifier representing your end-user, which\
+            \ can help monitoring and detecting abuse."
+          nullable: false
+        input_type:
+          type: string
+          description: input type of embedding search to use
+          example: query
+        model:
+          type: string
+          description: "ID of the model to use. You can use the Models_List\
+            \ operation to see all of your available models, or see our Models_Get\
+            \ overview for descriptions of them."
+          nullable: false
+      additionalProperties: true
     CreateChatCompletionRequest:
       required:
       - messages
