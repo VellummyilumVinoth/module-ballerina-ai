@@ -26,7 +26,7 @@ dependencies = [
 ]
 modules = [
 	{org = "ballerina", packageName = "ai", moduleName = "ai"},
-	{org = "ballerina", packageName = "ai", moduleName = "ai.azure.openai.chat"}
+	{org = "ballerina", packageName = "ai", moduleName = "ai.wso2"}
 ]
 
 [[package]]
