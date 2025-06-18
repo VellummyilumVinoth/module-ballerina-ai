@@ -195,6 +195,11 @@ public enum VectorStoreQueryMode {
 public isolated class InMemoryVectorStore {
     *VectorStore;
     private final VectorEntry[] entries = [];
+    private final int topK;
+
+    public isolated function init(int topK = 3) {
+        self.topK = topK;
+    }
 
     public isolated function add(VectorEntry[] entries) returns Error? {
         foreach VectorEntry entry in entries {
@@ -220,7 +225,8 @@ public isolated class InMemoryVectorStore {
                 results.push({document: entry.document, embedding: entry.embedding, score: similarity});
             }
             var sorted = from var entry in results
-                order by entry.score
+                order by entry.score descending
+                limit self.topK
                 select entry;
             return sorted.clone();
         }
