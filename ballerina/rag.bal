@@ -14,6 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+import ai.azure.openai.chat;
+
 public type ChunkStratery isolated object {
     public isolated function chunk(string content) returns Document[]|Error;
 };
@@ -31,10 +33,10 @@ public isolated class Rag {
     private final VectorKnowledgeBase knowledgeBase;
     private final RagPromptBuilder promptBuilder;
 
-    public isolated function init(ModelProvider model = new Wso2ModelProvider(),
+    public isolated function init(ModelProvider? model = (),
             VectorKnowledgeBase knowledgeBase = new VectorKnowledgeBase(new InMemoryVectorStore(), new Wso2EmbeddingProvider()),
-            RagPromptBuilder promptBuilder = new DefaultRagPromptBuilder()) {
-        self.model = model;
+            RagPromptBuilder promptBuilder = new DefaultRagPromptBuilder()) returns Error? {
+        self.model = model ?: check getDefaultModelProvider();
         self.knowledgeBase = knowledgeBase;
         self.promptBuilder = promptBuilder;
     }
@@ -244,11 +246,89 @@ public isolated class InMemoryVectorStore {
     }
 }
 
+public type Wso2ModelProviderConfig record {|
+    string serviceUrl;
+    string accessToken;
+|};
+
+configurable Wso2ModelProviderConfig? wso2ModelProviderConfig = ();
+
 public isolated client class Wso2ModelProvider {
     *ModelProvider;
+    private final chat:Client llmClient;
 
-    isolated remote function chat(ChatMessage[] messages, ChatCompletionFunctions[] tools, string? stop)
-    returns ChatAssistantMessage|LlmError {
-        return {role: ASSISTANT, content: "Dummy response"};
+    public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
+        chat:Client|error llmClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
+        if llmClient is error {
+            return error Error("Failed to initialize Wso2ModelProvider", llmClient);
+        }
+        self.llmClient = llmClient;
     }
+
+    isolated remote function chat(ChatMessage[] messages, ChatCompletionFunctions[] tools, string? stop = ())
+    returns ChatAssistantMessage|LlmError {
+        chat:CreateChatCompletionRequest request = {stop, messages: self.mapToChatCompletionRequestMessage(messages)};
+        if tools.length() > 0 {
+            request.functions = tools;
+        }
+        chat:CreateChatCompletionResponse|error response = self.llmClient->/chat/completions.post(request);
+        if response is error {
+            return error LlmConnectionError("Error while connecting to the model", response);
+        }
+
+        var choices = response.choices;
+        if choices.length() == 0 {
+            return error LlmInvalidResponseError("Empty response from the model when using function call API");
+        }
+        chat:ChatCompletionResponseMessage? message = choices[0].message;
+        ChatAssistantMessage chatAssistantMessage = {role: ASSISTANT, content: message?.content};
+        chat:ChatCompletionFunctionCall? functionCall = message?.functionCall;
+        if functionCall is chat:ChatCompletionFunctionCall {
+            chatAssistantMessage.toolCalls = [check self.mapToFunctionCall(functionCall)];
+        }
+        return chatAssistantMessage;
+    }
+
+    private isolated function mapToChatCompletionRequestMessage(ChatMessage[] messages)
+        returns chat:ChatCompletionRequestMessage[] {
+        chat:ChatCompletionRequestMessage[] chatCompletionRequestMessages = [];
+        foreach ChatMessage message in messages {
+            if message is ChatAssistantMessage {
+                chat:ChatCompletionRequestMessage assistantMessage = {role: ASSISTANT};
+                FunctionCall[]? toolCalls = message.toolCalls;
+                if toolCalls is FunctionCall[] {
+                    assistantMessage["function_call"] = {
+                        name: toolCalls[0].name,
+                        arguments: toolCalls[0].arguments.toJsonString()
+                    };
+                }
+                if message?.content is string {
+                    assistantMessage["content"] = message?.content;
+                }
+                chatCompletionRequestMessages.push(assistantMessage);
+            } else {
+                chatCompletionRequestMessages.push(message);
+            }
+        }
+        return chatCompletionRequestMessages;
+    }
+
+    private isolated function mapToFunctionCall(chat:ChatCompletionFunctionCall functionCall)
+    returns FunctionCall|LlmError {
+        do {
+            json jsonArgs = check functionCall.arguments.fromJsonString();
+            map<json>? arguments = check jsonArgs.cloneWithType();
+            return {name: functionCall.name, arguments};
+        } on fail error e {
+            return error LlmError("Invalid or malformed arguments received in function call response.", e);
+        }
+    }
+}
+
+isolated function getDefaultModelProvider() returns Wso2ModelProvider|Error {
+    Wso2ModelProviderConfig? config = wso2ModelProviderConfig;
+    if config is () {
+        return error Error("Set the WSO2 model provider config in toml file");
+    }
+    return new Wso2ModelProvider(config);
 }
