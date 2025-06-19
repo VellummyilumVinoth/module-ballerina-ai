@@ -13,6 +13,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+import ballerina/uuid;
 
 # Represents a dense vector with floating-point values.
 public type Vector float[];
@@ -38,9 +39,9 @@ public type HybridVector record {|
 # Union type representing all possible embedding vector formats.
 public type EmbeddingVector Vector|SparseVector|HybridVector;
 
-# Enumeration of supported operators for Pinecone metadata filtering.
+# Enumeration of supported operators for metadata filtering.
 # These operators define how metadata values should be compared during vector searches.
-public enum PineconeOperator {
+public enum MetadataFilterOperator {
     EQUALS = "==",
     NOT_EQUALS = "!=",
     GREATER_THAN = ">",
@@ -53,7 +54,7 @@ public enum PineconeOperator {
 
 # Enumeration of logical conditions for combining multiple metadata filters.
 # Defines how multiple filter conditions should be combined in vector searches.
-public enum PineconeCondition {
+public enum MetadataFilterCondition {
     AND = "and",
     OR = "or"
 }
@@ -66,7 +67,7 @@ public enum PineconeCondition {
 # + value - The value to compare against
 public type MetadataFilter record {|
     string key;
-    PineconeOperator operator?; // "==", "!=", ">", "<", ">=", "<=", "in", "nin"
+    MetadataFilterOperator operator?; // "==", "!=", ">", "<", ">=", "<=", "in", "nin"
     anydata value;
 |};
 
@@ -77,7 +78,7 @@ public type MetadataFilter record {|
 # + condition - Logical operator to combine filters (optional, defaults to AND)
 public type MetadataFilters record {|
     MetadataFilter[] filter?;
-    PineconeCondition condition?; // "and", "or"
+    MetadataFilterCondition condition?; // "and", "or"
 |};
 
 # Represents a complete vector store query with embedding and optional filters.
@@ -101,9 +102,11 @@ public type Document record {|
 
 # Represents a vector entry combining an embedding with its source document.
 #
+#
 # + embedding - The vector representation of the document content  
 # + document - The original document associated with this embedding
 public type VectorEntry record {|
+    string id?;
     EmbeddingVector embedding;
     Document document;
 |};
@@ -237,7 +240,7 @@ public isolated class VectorKnowledgeBase {
     #
     # + vectorStore - The vector store for persistence
     # + embeddingProvider - The embedding provider for vectorization
-    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel){
+    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel) {
         self.vectorStore = vectorStore;
         self.embeddingModel = embeddingModel;
         self.retriever = new Retriever(vectorStore, embeddingModel);
@@ -253,7 +256,7 @@ public isolated class VectorKnowledgeBase {
         VectorEntry[] entries = [];
         foreach Document document in documents {
             EmbeddingVector embedding = check self.embeddingModel->embed(document.content);
-            VectorEntry entry = {embedding, document};
+            VectorEntry entry = {id: uuid:createRandomUuid(), embedding, document};
             entries.push(entry);
         }
         check self.vectorStore.add(entries);
@@ -379,16 +382,12 @@ public isolated class InMemoryVectorStore {
         lock {
             int? indexToRemove = ();
             foreach int i in 0 ..< self.entries.length() {
-                map<anydata>? metadata = self.entries[i].document.metadata;
-                if metadata is map<anydata> {
-                    anydata idValue = metadata["id"];
-                    if idValue is string && idValue == referenceId {
-                        indexToRemove = i;
-                        break;
-                    }
+                if self.entries[i].id == referenceId {
+                    indexToRemove = i;
+                    break;
                 }
             }
-            
+
             if indexToRemove is int {
                 _ = self.entries.remove(indexToRemove);
             } else {
@@ -456,7 +455,8 @@ public isolated class Rag {
     # + return - An error if initialization fails, otherwise nil
     public isolated function init(ModelProvider model = new Wso2ModelProvider(),
             VectorKnowledgeBase knowledgeBase = new VectorKnowledgeBase(new InMemoryVectorStore(),
-                new Wso2EmbeddingProvider()),
+                new Wso2EmbeddingProvider()
+            ),
             RagPromptBuilder ragPromptBuilder = new DefaultRagPromptBuilder()
             ) returns Error? {
         self.model = model;
