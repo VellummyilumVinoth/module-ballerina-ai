@@ -26,7 +26,7 @@ public type SparseVector record {|
     Vector values;
 |};
 
-# Represents a hybrid embedding containing both dense and sparse vector representations..
+# Represents a hybrid embedding containing both dense and sparse vector representations.
 #
 # + dense - Dense vector representation of the embedding
 # + sparse - Sparse vector representation of the embedding
@@ -41,20 +41,21 @@ public type EmbeddingVector Vector|SparseVector|HybridVector;
 # Enumeration of supported operators for Pinecone metadata filtering.
 # These operators define how metadata values should be compared during vector searches.
 public enum PineconeOperator {
-    EQUALS,
-    NOT_EQUALS,
-    GREATER_THAN,
-    LESS_THAN,
-    GREATER_THAN_OR_EQUAL,
-    LESS_THAN_OR_EQUAL,
-    IN,
-    NOT_IN
+    EQUALS = "==",
+    NOT_EQUALS = "!=",
+    GREATER_THAN = ">",
+    LESS_THAN = "<",
+    GREATER_THAN_OR_EQUAL = ">=",
+    LESS_THAN_OR_EQUAL = "<=",
+    IN = "in",
+    NOT_IN = "nin"
 }
 
 # Enumeration of logical conditions for combining multiple metadata filters.
 # Defines how multiple filter conditions should be combined in vector searches.
 public enum PineconeCondition {
-    AND, OR
+    AND = "and",
+    OR = "or"
 }
 
 # Metadata filter for vector search operations.
@@ -89,7 +90,7 @@ public type VectorStoreQuery record {|
     MetadataFilters filters?;
 |};
 
-# Represents a document with content and optional metadata..
+# Represents a document with content and optional metadata.
 #
 # + content - The textual content of the document 
 # + metadata - Optional key-value pairs containing additional information about the document
@@ -158,6 +159,12 @@ public type VectorStore isolated object {
     # + queryEmbedding - The query embedding to search for
     # + return - Array of matching vectors with similarity scores or an error if search fails
     public isolated function query(VectorStoreQuery queryEmbedding) returns VectorMatch[]|Error;
+
+    # Deletes a vector entry from the store.
+    #
+    # + referenceId - The reference ID of the vector entry to delete
+    # + return - An error if the operation fails, otherwise nil
+    public isolated function delete(string referenceId) returns Error?;
 };
 
 # Interface for embedding providers.
@@ -171,7 +178,7 @@ public type EmbeddingProvider isolated client object {
 };
 
 # Document retriever for finding relevant documents based on query similarity.
-# Retriever combines embedding generation and vector search to return
+# Retriever combines embedding generation and vector search to return matching documents.
 public isolated class Retriever {
     private final VectorStore vectorStore;
     private final EmbeddingProvider embeddingModel;
@@ -192,11 +199,13 @@ public isolated class Retriever {
     # returning matching documents with similarity scores.
     #
     # + query - The text query to search for
+    # + filters - Optional metadata filters to apply during retrieval
     # + return - Array of matching documents with scores or an error if retrieval fails
-    public isolated function retrieve(string query) returns DocumentMatch[]|Error {
+    public isolated function retrieve(string query, MetadataFilters? filters = ()) returns DocumentMatch[]|Error {
         EmbeddingVector queryEmbedding = check self.embeddingModel->embed(query);
         VectorStoreQuery vectorStoreQuery = {
-            embeddingVector: queryEmbedding
+            embeddingVector: queryEmbedding,
+            filters: filters
         };
         VectorMatch[] matches = check self.vectorStore.query(vectorStoreQuery);
         return from VectorMatch 'match in matches
@@ -208,11 +217,11 @@ public isolated class Retriever {
 # The vector knowledge base handles the process of converting documents to embeddings 
 # and storing them for retrieval.
 public isolated class VectorKnowledgeBase {
-    // Need hybrid index or seperate vector store (one for dense and one for sparse)? then we need to change the init API
-    // If we have seperate vector store we need to provide seperate embedding modesl for each vector store (one for dense one for sparse); 
-    // How to assosiate vector store with embedding model?
+    // Need hybrid index or separate vector store (one for dense and one for sparse)? then we need to change the init API
+    // If we have separate vector store we need to provide separate embedding models for each vector store (one for dense one for sparse); 
+    // How to associate vector store with embedding model?
 
-    // Or do we need to compe up with hierarchy of vector indexes?
+    // Or do we need to come up with hierarchy of vector indexes?
     // VectorIndex
     // - HybridVectorIndex
     // - DefaultVectorIndex
@@ -222,13 +231,13 @@ public isolated class VectorKnowledgeBase {
     private final EmbeddingProvider embeddingModel;
     private final Retriever retriever;
 
-    # Initializes a new vector index.
-    # Creates a vector index with the specified storage and embedding capabilities.
-    # The index manages the entire lifecycle from document ingestion to retrieval.
+    # Initializes a new vector knowledge base.
+    # Creates a vector knowledge base with the specified storage and embedding capabilities.
+    # The knowledge base manages the entire lifecycle from document ingestion to retrieval.
     #
     # + vectorStore - The vector store for persistence
     # + embeddingProvider - The embedding provider for vectorization
-    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel) {
+    public isolated function init(VectorStore vectorStore, EmbeddingProvider embeddingModel){
         self.vectorStore = vectorStore;
         self.embeddingModel = embeddingModel;
         self.retriever = new Retriever(vectorStore, embeddingModel);
@@ -245,13 +254,12 @@ public isolated class VectorKnowledgeBase {
         foreach Document document in documents {
             EmbeddingVector embedding = check self.embeddingModel->embed(document.content);
             VectorEntry entry = {embedding, document};
-            // generate sparse vectors
             entries.push(entry);
         }
         check self.vectorStore.add(entries);
     }
 
-    # Returns the retriever instance for this index.
+    # Returns the retriever instance for this knowledge base.
     # Provides access to the retriever for performing document searches against the indexed document collection.
     #
     # + return - The retriever instance
@@ -274,7 +282,7 @@ public type RagPromptBuilder isolated object {
     public isolated function build(Document[] contextDocuments, string query) returns Prompt;
 };
 
-# # Default implementation of prompt builder.
+# Default implementation of prompt builder.
 # Provides a standard template for combining context documents with user queries.
 # Creates system prompts that instruct the model to answer based on provided context.
 public isolated class RagDefaultPromptBuilder {
@@ -342,7 +350,7 @@ public isolated class InMemoryVectorStore {
     # Queries the vector store for similar vectors.
     # Uses cosine similarity for dense vector comparison.
     #
-    # + query - The query embedding vector
+    # + query - The query containing the embedding vector and optional filters
     # + return - Array of vector matches sorted by similarity score or error
     public isolated function query(VectorStoreQuery query) returns VectorMatch[]|Error {
         if query.embeddingVector !is Vector {
@@ -359,6 +367,33 @@ public isolated class InMemoryVectorStore {
                 order by entry.score descending
                 select entry;
             return sorted.clone();
+        }
+    }
+
+    # Deletes a vector entry from the in-memory store.
+    # Removes the entry that matches the given reference ID from document metadata.
+    #
+    # + referenceId - The reference ID of the vector entry to delete
+    # + return - Error if the reference ID is not found, otherwise nil
+    public isolated function delete(string referenceId) returns Error? {
+        lock {
+            int? indexToRemove = ();
+            foreach int i in 0 ..< self.entries.length() {
+                map<anydata>? metadata = self.entries[i].document.metadata;
+                if metadata is map<anydata> {
+                    anydata idValue = metadata["id"];
+                    if idValue is string && idValue == referenceId {
+                        indexToRemove = i;
+                        break;
+                    }
+                }
+            }
+            
+            if indexToRemove is int {
+                _ = self.entries.remove(indexToRemove);
+            } else {
+                return error Error(string `Vector entry with reference ID '${referenceId}' not found`);
+            }
         }
     }
 
@@ -398,7 +433,7 @@ public isolated client class Wso2EmbeddingProvider {
     # Transforms textual content into numerical vector representation for similarity search.
     #
     # + document - The text document to embed
-    # + return - Empty embedding vector or error
+    # + return - Embedding vector representation or error
     isolated remote function embed(string document) returns EmbeddingVector|Error {
         return [];
     }
@@ -418,12 +453,12 @@ public isolated class Rag {
     # + modelProvider - The language model provider for response generation
     # + knowledgeBase - The vector knowledge base containing searchable documents
     # + ragPromptBuilder - Optional custom RAG prompt builder (defaults to DefaultRagPromptBuilder)
+    # + return - An error if initialization fails, otherwise nil
     public isolated function init(ModelProvider model = new Wso2ModelProvider(),
             VectorKnowledgeBase knowledgeBase = new VectorKnowledgeBase(new InMemoryVectorStore(),
-                new Wso2EmbeddingProvider()
-            ),
+                new Wso2EmbeddingProvider()),
             RagPromptBuilder ragPromptBuilder = new DefaultRagPromptBuilder()
-            ) {
+            ) returns Error? {
         self.model = model;
         self.knowledgeBase = knowledgeBase;
         self.ragPromptBuilder = ragPromptBuilder;
@@ -433,9 +468,10 @@ public isolated class Rag {
     # Retrieves relevant documents, builds context-aware prompts, and generates responses.
     #
     # + query - The user's question or query
+    # + filters - Optional metadata filters to apply during retrieval
     # + return - The generated response or an error if processing fails
-    public isolated function query(string query) returns string|Error {
-        DocumentMatch[] contextDocuments = check self.knowledgeBase.getRetriever().retrieve(query);
+    public isolated function query(string query, MetadataFilters? filters = {}) returns string|Error {
+        DocumentMatch[] contextDocuments = check self.knowledgeBase.getRetriever().retrieve(query, filters);
         Prompt prompt = self.ragPromptBuilder.build(contextDocuments.'map(ctx => ctx.document), query);
 
         ChatMessage[] messages = self.mapPromptToChatMessages(prompt);
@@ -496,4 +532,16 @@ public isolated class DefaultRagPromptBuilder {
 
         return {systemPrompt, userPrompt};
     }
+}
+
+# Splits content into documents based on line breaks.
+# Each line becomes a separate document with the line content.
+#
+# + content - The input text content to be split by lines
+# + return - Array of documents, one per non-empty line
+public isolated function splitDocumentByLine(string content) returns Document[] {
+    string[] lines = re `\n`.split(content);
+    return from string line in lines
+        where line.trim() != ""
+        select {content: line.trim()};
 }
