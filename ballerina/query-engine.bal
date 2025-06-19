@@ -102,7 +102,7 @@ public type Document record {|
 
 # Represents a vector entry combining an embedding with its source document.
 #
-#
+# + id - Unique identifier for the vector entry
 # + embedding - The vector representation of the document content  
 # + document - The original document associated with this embedding
 public type VectorEntry record {|
