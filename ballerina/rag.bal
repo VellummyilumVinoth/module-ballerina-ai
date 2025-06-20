@@ -161,8 +161,9 @@ public isolated client class Wso2EmbeddingProvider {
     private final wso2:Client embeddingClient;
 
     public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
-        wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}}, 
-        serviceUrl = config.serviceUrl);
+        wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}},
+            serviceUrl = config.serviceUrl
+        );
         if embeddingClient is error {
             return error Error("Failed to initialize Wso2ModelProvider", embeddingClient);
         }
@@ -360,5 +361,4 @@ isolated function getDefaultKnowledgeBase() returns VectorKnowledgeBase|Error {
     }
     return new VectorKnowledgeBase(new InMemoryVectorStore(), wso2EmbeddingProvider);
 }
-
 
