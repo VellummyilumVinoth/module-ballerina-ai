@@ -39,14 +39,13 @@ public type HybridVector record {|
     SparseVector sparse;
 |};
 
-# Union type representing all possible embedding vector formats.
+# Represents possible vector types.
 public type Embedding Vector|SparseVector|HybridVector;
 
-# Enumeration of supported operators for metadata filtering.
-# These operators define how metadata values should be compared during vector searches.
+# Represents the set of supported operators used for metadata filtering during vector search operations.
 public enum MetadataFilterOperator {
-    EQUALS = "==",
-    NOT_EQUALS = "!=",
+    EQUAL = "==",
+    NOT_EQUAL = "!=",
     GREATER_THAN = ">",
     LESS_THAN = "<",
     GREATER_THAN_OR_EQUAL = ">=",
@@ -55,49 +54,48 @@ public enum MetadataFilterOperator {
     NOT_IN = "nin"
 }
 
-# Enumeration of logical conditions for combining multiple metadata filters.
-# Defines how multiple filter conditions should be combined in vector searches.
+# Represents logical conditions for combining multiple metadata filtering during vector search operations.
 public enum MetadataFilterCondition {
     AND = "and",
     OR = "or"
 }
 
-# Metadata filter for vector search operations.
+# Represents a metadata filter for vector search operations.
 # Defines conditions to filter vectors based on their associated metadata values.
 #
-# + key - The metadata field name to filter on
-# + operator - The comparison operator to use (optional, defaults to EQUALS)
-# + value - The value to compare against
+# + key - The name of the metadata field to filter
+# + operator - The comparison operator to use. Defaults to `EQUAL`
+# + value - - The value to compare the metadata field against
 public type MetadataFilter record {|
     string key;
-    MetadataFilterOperator operator?;
-    anydata value;
+    MetadataFilterOperator operator = EQUAL;
+    json value;
 |};
 
-# Container for multiple metadata filters with logical combination.
-# Allows complex filtering by combining multiple conditions with AND/OR logic.
+# Represents a container for combining multiple metadata filters using logical operators.
+# Enables complex filtering by applying multiple conditions with AND/OR logic during vector search.
 #
-# + filter - Array of individual metadata filters to apply
-# + condition - Logical operator to combine filters (optional, defaults to AND)
+# + filters - An array of `MetadataFilter` or nested `MetadataFilters` to apply.
+# + condition - The logical operator (`AND` or `OR`) used to combine the filters. Defaults to `AND`.
 public type MetadataFilters record {|
-    MetadataFilter[] filter?;
-    MetadataFilterCondition condition?;
+    (MetadataFilters|MetadataFilter)[] filters;
+    MetadataFilterCondition condition = AND;
 |};
 
-# Represents a complete vector store query with embedding and optional filters.
-# Combines the query vector with metadata filters for precise search operations.
+# Defines a query to the vector store with an embedding vector and optional metadata filters.
+# Supports precise search operations by combining vector similarity with metadata conditions.
 #
-# + embeddingVector - The vector to search for similar matches
-# + filters - Optional metadata filters to narrow down search results
+# + embedding - The vector to use for similarity search.
+# + filters - Optional metadata filters to refine the search results.
 public type VectorStoreQuery record {|
-    Embedding embeddingVector;
+    Embedding embedding;
     MetadataFilters filters?;
 |};
 
 # Represents a document with content and optional metadata.
 #
-# + content - The textual content of the document 
-# + metadata - Optional key-value pairs containing additional information about the document
+# + content - The main text content of the document
+# + metadata - Optional key-value pairs that provide additional information about the document
 public type Document record {|
     string content;
     map<anydata> metadata?;
@@ -105,9 +103,9 @@ public type Document record {|
 
 # Represents a vector entry combining an embedding with its source document.
 #
-# + id - Unique identifier for the vector entry
-# + embedding - The vector representation of the document content  
-# + document - The original document associated with this embedding
+# + id - Optional unique identifier for the vector entry
+# + embedding - The vector representation of the document content
+# + document - The original document associated with the embedding
 public type VectorEntry record {|
     string id?;
     Embedding embedding;
@@ -116,33 +114,31 @@ public type VectorEntry record {|
 
 # Represents a vector match result with similarity score.
 #
-# + score - Similarity score indicating how closely the vector matches the query 
+# + similarityScore - Similarity score indicating how closely the vector matches the query 
 public type VectorMatch record {|
     *VectorEntry;
-    float score;
+    float similarityScore;
 |};
 
 # Represents a document match result with similarity score.
 #
-# + document - The matched document  
-# + score - Similarity score indicating document relevance to the query
+# + document - The matched document
+# + similarityScore - Similarity score indicating document relevance to the query
 public type DocumentMatch record {|
     Document document;
-    float score;
+    float similarityScore;
 |};
 
-# Represents prompt templates for RAG (Retrieval-Augmented Generation) operations.
-# Prompts structure how context documents and user queries are formatted and presented
-# to language models for generating contextually relevant responses.
+# Represents a prompt constructed by `RagPromptTemplate` object.
 #
-# + systemPrompt - System-level instructions that define the model's behavior, role, and response format
-# + userPrompt - The user's question or query that needs to be answered using the provided context
+# + systemPrompt - System-level instructions that given to a Large Language Model
+# + userPrompt - The user's question or query given to the Large Language Model
 public type Prompt record {|
     string systemPrompt?;
-    string userPrompt?;
+    string userPrompt;
 |};
 
-# Enumeration of vector store query modes.
+# Represents query modes to be used with vector store.
 # Defines different search strategies for retrieving relevant documents
 # based on the type of embeddings and search algorithms to be used.
 public enum VectorStoreQueryMode {
@@ -151,75 +147,48 @@ public enum VectorStoreQueryMode {
     HYBRID
 };
 
-# Configuration record for WSO2 model provider settings.
-# Contains the necessary connection parameters for WSO2 AI services.
+# Represents configuratations of WSO2 provider.
 #
-# + serviceUrl - The URL endpoint for the WSO2 AI service
-# + accessToken - Authentication token for accessing WSO2 AI services
-public type Wso2ModelProviderConfig record {|
+# + serviceUrl - The URL for the WSO2 AI service
+# + accessToken - Access token for accessing WSO2 AI service
+public type Wso2ProviderConfig record {|
     string serviceUrl;
     string accessToken;
 |};
 
-# Interface for document chunking strategies.
-# Defines how large documents should be split into smaller, manageable pieces
-# for embedding and vector storage operations.
-public type ChunkStratery isolated object {
-    # Splits content into smaller document chunks.
-    #
-    # + content - The input text content to be chunked
-    # + return - Array of document chunks or an error if chunking fails
-    public isolated function chunk(string content) returns Document[]|Error;
-};
+# Configurable for WSO2 provider.
+configurable Wso2ProviderConfig? wso2ProviderConfig = ();
 
-# Simple document splitter that divides content by line breaks.
-# Each line becomes a separate document chunk, useful for structured text data.
-public isolated class DocumentByLineSplitter {
-    *ChunkStratery;
-
-    # Splits content into documents based on line breaks.
-    # Empty lines are filtered out from the resulting document array.
-    #
-    # + content - The input text content to be split by lines
-    # + return - Array of documents, one per non-empty line, or an error if processing fails
-    public isolated function chunk(string content) returns Document[]|Error {
-        return re `\n`.split(content).'map(line => {content: line});
-    }
-}
-
-# Configurable instance of WSO2 model provider configuration.
-# This should be set in the application's configuration file (Config.toml).
-configurable Wso2ModelProviderConfig? wso2ModelProviderConfig = ();
-
-# Interface for vector storage and retrieval operations.
-# Vector stores provide persistence and search capabilities for embeddings.
+# Represents a vector store that provides persistence, management, and search capabilities for vector embeddings.
 public type VectorStore isolated object {
+
     # Adds vector entries to the store.
     #
-    # + entries - Array of vector entries to be stored
-    # + return - An error if the operation fails, otherwise nil
+    # + entries - The array of vector entries to add.
+    # + return  - An `Error` if the operation fails; otherwise, `nil`.
     public isolated function add(VectorEntry[] entries) returns Error?;
 
-    # Searches for similar vectors in the store.
+    # Searches for vectors in the store that are most similar to a given query.
     #
-    # + queryEmbedding - The query embedding to search for
-    # + return - Array of matching vectors with similarity scores or an error if search fails
-    public isolated function query(VectorStoreQuery queryEmbedding) returns VectorMatch[]|Error;
+    # + query  - The vector store query that specifies the search criteria.
+    # + return - An array of matching vectors with their similarity scores,
+    #            or an `Error` if the operation fails.
+    public isolated function query(VectorStoreQuery query) returns VectorMatch[]|Error;
 
-    # Deletes a vector entry from the store.
+    # Deletes a vector entry from the store by its unique ID.
     #
-    # + referenceId - The reference ID of the vector entry to delete
-    # + return - An error if the operation fails, otherwise nil
-    public isolated function delete(string referenceId) returns Error?;
+    # + id     - The unique identifier of the vector entry to delete.
+    # + return - An `Error` if the operation fails; otherwise, `nil`.
+    public isolated function delete(string id) returns Error?;
 };
 
-# Interface for embedding providers.
-# Embedding providers convert text into vector representations for similarity search.
+# Represents an embedding provider that converts text into vector embeddings for similarity search.
 public type EmbeddingProvider isolated client object {
-    # Converts text into an embedding vector.
+
+    # Converts the given text into a vector embedding.
     #
-    # + document - The input text to be embedded
-    # + return - The embedding vector representation or an error if embedding fails
+    # + document - The input text to embed.
+    # + return   - The embedding vector representation, or an `Error` if embedding fails.
     isolated remote function embed(string document) returns Embedding|Error;
 };
 
@@ -250,12 +219,12 @@ public isolated class Retriever {
     public isolated function retrieve(string query, MetadataFilters? filters = ()) returns DocumentMatch[]|Error {
         Embedding queryEmbedding = check self.embeddingModel->embed(query);
         VectorStoreQuery vectorStoreQuery = {
-            embeddingVector: queryEmbedding,
+            embedding: queryEmbedding,
             filters: filters
         };
         VectorMatch[] matches = check self.vectorStore.query(vectorStoreQuery);
         return from VectorMatch 'match in matches
-            select {document: 'match.document, score: 'match.score};
+            select {document: 'match.document, similarityScore: 'match.similarityScore};
     }
 }
 
@@ -350,7 +319,7 @@ public isolated client class Wso2ModelProvider {
     #
     # + config - WSO2 model provider configuration containing service URL and access token
     # + return - An error if initialization fails (e.g., invalid configuration), otherwise nil
-    public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
+    public isolated function init(*Wso2ProviderConfig config) returns Error? {
         wso2:Client|error llmClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
         if llmClient is error {
             return error Error("Failed to initialize Wso2ModelProvider", llmClient);
@@ -474,18 +443,18 @@ public isolated class InMemoryVectorStore {
     # + query - The query containing the embedding vector and optional filters
     # + return - Array of vector matches sorted by similarity score (limited to topK) or error
     public isolated function query(VectorStoreQuery query) returns VectorMatch[]|Error {
-        if query.embeddingVector !is Vector {
+        if query.embedding !is Vector {
             return error Error("InMemoryVectorStore implementation only supports dense vectors");
         }
 
         lock {
             VectorMatch[] results = [];
             foreach var entry in self.entries {
-                float similarity = self.cosineSimilarity(<Vector>query.embeddingVector.clone(), <Vector>entry.embedding);
-                results.push({document: entry.document, embedding: entry.embedding, score: similarity});
+                float similarity = self.cosineSimilarity(<Vector>query.embedding.clone(), <Vector>entry.embedding);
+                results.push({document: entry.document, embedding: entry.embedding, similarityScore: similarity});
             }
             var sorted = from var entry in results
-                order by entry.score descending
+                order by entry.similarityScore descending
                 limit self.topK
                 select entry;
             return sorted.clone();
@@ -554,7 +523,7 @@ public isolated client class Wso2EmbeddingProvider {
     #
     # + config - WSO2 model provider configuration containing service URL and access token
     # + return - An error if initialization fails (e.g., invalid configuration), otherwise nil
-    public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
+    public isolated function init(*Wso2ProviderConfig config) returns Error? {
         wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
         if embeddingClient is error {
             return error Error("Failed to initialize Wso2ModelProvider", embeddingClient);
@@ -582,7 +551,7 @@ public isolated client class Wso2EmbeddingProvider {
 #
 # + return - Configured WSO2ModelProvider instance or error if configuration is missing
 isolated function getDefaultModelProvider() returns Wso2ModelProvider|Error {
-    Wso2ModelProviderConfig? config = wso2ModelProviderConfig;
+    Wso2ProviderConfig? config = wso2ProviderConfig;
     if config is () {
         return error Error("Set the WSO2 model provider config in toml file");
     }
@@ -594,7 +563,7 @@ isolated function getDefaultModelProvider() returns Wso2ModelProvider|Error {
 #
 # + return - Configured VectorKnowledgeBase instance or error if configuration/initialization fails
 isolated function getDefaultKnowledgeBase() returns VectorKnowledgeBase|Error {
-    Wso2ModelProviderConfig? config = wso2ModelProviderConfig;
+    Wso2ProviderConfig? config = wso2ProviderConfig;
     if config is () {
         return error Error("Set the WSO2 model provider config in toml file");
     }
