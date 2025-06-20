@@ -161,7 +161,8 @@ public isolated client class Wso2EmbeddingProvider {
     private final wso2:Client embeddingClient;
 
     public isolated function init(*Wso2ModelProviderConfig config) returns Error? {
-       wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}}, serviceUrl = config.serviceUrl);
+        wso2:Client|error embeddingClient = new (config = {auth: {token: config.accessToken}}, 
+        serviceUrl = config.serviceUrl);
         if embeddingClient is error {
             return error Error("Failed to initialize Wso2ModelProvider", embeddingClient);
         }
@@ -233,16 +234,11 @@ public isolated class InMemoryVectorStore {
         }
 
         lock {
-            VectorMatch[] results = [];
-            foreach var entry in self.entries {
-                float similarity = self.cosineSimilarity(query.clone(), <Vector>entry.embedding);
-                results.push({document: entry.document, embedding: entry.embedding, score: similarity});
-            }
-            var sorted = from var entry in results
-                order by entry.score descending
+            VectorMatch[] results = from var entry in self.entries
+                let float similarity = self.cosineSimilarity(query.clone(), <Vector>entry.embedding)
                 limit self.topK
-                select entry;
-            return sorted.clone();
+                select {document: entry.document, embedding: entry.embedding, score: similarity};
+            return results.clone();
         }
     }
 
@@ -364,3 +360,5 @@ isolated function getDefaultKnowledgeBase() returns VectorKnowledgeBase|Error {
     }
     return new VectorKnowledgeBase(new InMemoryVectorStore(), wso2EmbeddingProvider);
 }
+
+
