@@ -92,5 +92,14 @@ public type InsufficientScopeError distinct TokenValidationError;
 # Represents an error that occurs when the maximum number of iterations has been exceeded.
 public type MaxIterationExceededError distinct (Error & error<record {|(ExecutionResult|ExecutionError|Error)[] steps;|}>);
 
-# Represents errors that occur during memory-related operations.  
+# Represents errors that occur during memory-related operations.
 public type MemoryError distinct Error;
+
+# Represents an error returned by `resume` when the session has no pending human-input
+# interrupt to resume from.
+public type NoPendingInterruptError distinct Error;
+
+# Signals that the agent paused to request human input (human-in-the-loop). This is a
+# control-flow signal rather than a failure: the `interrupt` detail describes what the human
+# must provide, and the workflow is continued by calling `Agent.resume` with the same session.
+public type InterruptError distinct (Error & error<record {| Interrupt interrupt; |}>);

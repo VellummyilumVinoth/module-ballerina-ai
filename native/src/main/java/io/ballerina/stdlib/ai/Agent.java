@@ -28,6 +28,7 @@ import io.ballerina.runtime.api.values.BTypedesc;
 
 public class Agent {
     public static final String RUN_INTERNAL_METHOD_NAME = "runInternal";
+    public static final String RESUME_INTERNAL_METHOD_NAME = "resumeInternal";
 
     private Agent() {
     }
@@ -41,6 +42,20 @@ public class Agent {
                 return env.getRuntime().callMethod(agent, RUN_INTERNAL_METHOD_NAME, null, paramFeed);
             } catch (BError bError) {
                 return ModuleUtils.createError("Unable to obtain valid answer from the agent", bError);
+            }
+        });
+    }
+
+    @SuppressWarnings("unused")
+    public static Object resume(Environment env, BObject agent,
+                                BString sessionId, Object response, BObject context, BTypedesc td) {
+        return env.yieldAndRun(() -> {
+            try {
+                boolean withTrace = !TypeUtils.isSameType(PredefinedTypes.TYPE_STRING, td.getDescribingType());
+                Object[] paramFeed = new Object[]{sessionId, response, context, withTrace};
+                return env.getRuntime().callMethod(agent, RESUME_INTERNAL_METHOD_NAME, null, paramFeed);
+            } catch (BError bError) {
+                return ModuleUtils.createError("Unable to resume the agent execution", bError);
             }
         });
     }

@@ -20,6 +20,7 @@ import ballerina/cache;
 import ballerina/io;
 import ballerina/log;
 import ballerina/time;
+import ballerina/uuid;
 
 # Execution progress record
 type ExecutionProgress record {|
@@ -114,6 +115,10 @@ type BaseAgent distinct isolated object {
 class Executor {
     *object:Iterable;
     private boolean isCompleted = false;
+    # Set when a tool requests human input, signalling the loop to pause.
+    public boolean isInterrupted = false;
+    # The human-input request and the tool call that triggered the pause.
+    public Interrupted? interrupt = ();
     private final string sessionId;
     private final BaseAgent agent;
     # Contains the current execution progress for the agent and the query
@@ -140,7 +145,7 @@ class Executor {
     #
     # + return - True if agent has more steps to execute, false otherwise
     public isolated function hasNext() returns boolean {
-        return !self.isCompleted;
+        return !self.isCompleted && !self.isInterrupted;
     }
 
     # Reason the next step of the agent.
@@ -167,7 +172,7 @@ class Executor {
     #
     # + llmResponse - LLM response containing the tool to be executed and the raw LLM output
     # + return - Observations from the tool can be any|error|null
-    public isolated function act(json llmResponse) returns ExecutionResult|LlmChatResponse|ExecutionError{
+    public isolated function act(json llmResponse) returns ExecutionResult|LlmChatResponse|ExecutionError|Interrupted {
         LlmToolResponse|LlmChatResponse|LlmInvalidGenerationError parsedOutput = self.agent.parseLlmResponse(llmResponse);
         if parsedOutput is LlmChatResponse {
             log:printDebug("Parsed LLM response as chat response",
@@ -267,6 +272,23 @@ class Executor {
                     span.close(toolExecutionError);
                 } else {
                     anydata|error value = output.value;
+                    if value is HumanInput {
+                        log:printDebug("Tool requested human input; pausing the agent",
+                            agentId = self.agentId,
+                            executionId = self.progress.executionId,
+                            sessionId = self.sessionId,
+                            toolName = toolName,
+                            requestMessage = value.message
+                        );
+                        self.isInterrupted = true;
+                        Interrupted interrupted = {request: value, pendingCall: parsedOutput};
+                        self.interrupt = interrupted;
+                        span.addOutput(value.message);
+                        span.close();
+                        // Do not record an execution step: the tool call is left "dangling"
+                        // (no observation) so it becomes the resume checkpoint.
+                        return interrupted;
+                    }
                     observation = value is error ? value.toString() : value;
                     log:printDebug("Tool execution successful",
                         agentId = self.agentId,
@@ -315,16 +337,16 @@ class Executor {
     #
     # + return - a record with the execution step or an error if the agent failed
     public function iterator() returns object {
-        public function next() returns record {|ExecutionResult|LlmChatResponse|ExecutionError|Error value;|}?;
+        public function next() returns record {|ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error value;|}?;
     } {
         return self;
     }
 
     # Reason and execute the next step of the agent.
     #
-    # + return - A record with ExecutionResult, chat response or an error 
-    public isolated function next() returns record {|ExecutionResult|LlmChatResponse|ExecutionError|Error value;|}? {
-        if self.isCompleted {
+    # + return - A record with ExecutionResult, chat response, an interrupt or an error
+    public isolated function next() returns record {|ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error value;|}? {
+        if self.isCompleted || self.isInterrupted {
             return ();
         }
         json|Error llmResponse = self.reason();
@@ -343,14 +365,13 @@ class Executor {
 # + maxIter - No. of max iterations that agent will run to execute the task (default: 5)
 # + context - Context values to be used by the agent to execute the task
 # + verbose - If true, then print the reasoning steps (default: true)
+# + agentId - Optional agent identifier used for logging
 # + sessionId - The ID associated with the memory
 # + executionId - Unique identifier for this execution
 # + return - Returns the execution steps tracing the agent's reasoning and outputs from the tools
 isolated function run(BaseAgent agent, string instruction, string query, int maxIter, boolean verbose, string? agentId, 
         string sessionId = DEFAULT_SESSION_ID, Context context = new, string executionId = DEFAULT_EXECUTION_ID)
         returns ExecutionTrace {
-    time:Utc startTime = time:utcNow();
-    Iteration[] iterations = [];
     log:printDebug("Agent execution loop started",
         agentId = agentId,
         executionId = executionId,
@@ -360,8 +381,6 @@ isolated function run(BaseAgent agent, string instruction, string query, int max
         isStateless = agent.stateless
     );
 
-    (ExecutionResult|ExecutionError|Error)[] steps = [];
-    string? content = ();
     // Retrieve the conversation history from memory, update the system message at the start,
     // and append the user message for the current interaction.
     // After iterating and collecting execution steps in temporary memory,
@@ -390,13 +409,58 @@ isolated function run(BaseAgent agent, string instruction, string query, int max
 
     Executor executor = new (agent, sessionId, progress = {instruction, query, context, executionId, history});
     ChatMessage[] temporaryMemory = [systemMessage, userMessage];
+    return executeLoop(agent, executor, history, temporaryMemory, maxIter, verbose, sessionId, agentId, executionId);
+}
+
+# Drives the reason-act iteration of the agent until it produces a final answer, errors,
+# reaches `maxIter`, or pauses for human input. Shared by `run` (initial query) and
+# `resumeRun` (continuation after a human response).
+#
+# + agent - Agent being executed
+# + executor - Pre-initialized executor holding the seeded execution progress
+# + history - Conversation history up to (and including) the current turn's trigger message
+# + temporaryMemory - Messages to persist for this turn, pre-seeded by the caller
+# + maxIter - Maximum number of iterations for this segment of execution
+# + verbose - If true, prints the reasoning steps
+# + sessionId - The ID associated with the memory
+# + agentId - Optional agent identifier used for logging
+# + executionId - Unique identifier for this execution
+# + return - Returns the execution trace, carrying an `Interrupt` when paused for human input
+isolated function executeLoop(BaseAgent agent, Executor executor, ChatMessage[] history,
+        ChatMessage[] temporaryMemory, int maxIter, boolean verbose, string sessionId,
+        string? agentId, string executionId) returns ExecutionTrace {
+    time:Utc startTime = time:utcNow();
+    Iteration[] iterations = [];
+    (ExecutionResult|ExecutionError|Error)[] steps = [];
+    string? content = ();
     ChatAssistantMessage? finalAssistantMessage = ();
     int iter = 0;
-    foreach ExecutionResult|LlmChatResponse|ExecutionError|Error step in executor {
+    foreach ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error step in executor {
         ChatAssistantMessage|ChatFunctionMessage|Error iterationOutput = getOutputOfIteration(step);
         ChatMessage[] iterationHistory = buildCurrentIterationHistory(executor.progress, history);
         if verbose {
             verbosePrint(step, iter);
+        }
+        if step is Interrupted {
+            // A tool requested human input. Persist the conversation so far, leaving the
+            // triggering tool call "dangling" (no result) as the resume checkpoint, and
+            // surface an `Interrupt` to the caller. Memory is NOT deleted for stateless
+            // agents while paused, otherwise the checkpoint would be lost before resume.
+            ChatAssistantMessage danglingAssistant = buildDanglingAssistant(step.pendingCall);
+            iterations.push({startTime, endTime: time:utcNow(), history: iterationHistory,
+                    output: danglingAssistant});
+            temporaryMemory.push(...createFunctionCallMessages(executor.progress));
+            temporaryMemory.push(danglingAssistant);
+            updateMemory(agent.memory, sessionId, temporaryMemory, agentId);
+            Interrupt interrupt = buildInterrupt(sessionId, step);
+            log:printDebug("Agent paused awaiting human input",
+                agentId = agentId,
+                executionId = executionId,
+                sessionId = sessionId,
+                toolName = interrupt.toolName,
+                interruptId = interrupt.interruptId
+            );
+            return {steps, iterations, answer: (), toolCalls: collectToolCalls(executor.progress), interrupt};
         }
         if iter == maxIter {
             log:printDebug("Maximum iterations reached without final answer",
@@ -411,12 +475,12 @@ isolated function run(BaseAgent agent, string instruction, string query, int max
         if step is ExecutionError && step.'error is UnauthorizedError {
             error err = step.'error;
             content = "I could not complete your request due to an authorization issue, " +
-              "possibly related to the access token or its permissions. Please check that your " 
+              "possibly related to the access token or its permissions. Please check that your "
               + "credentials are valid and have the required access, then try again";
-            Error newError =  error Error(content.toString(), 'error = err); 
+            Error newError =  error Error(content.toString(), 'error = err);
             iterationOutput = newError;
             if verbose {
-                verbosePrint(newError, iter); 
+                verbosePrint(newError, iter);
             }
             log:printDebug("Tool execution failed: ",
                 err,
@@ -479,21 +543,148 @@ isolated function run(BaseAgent agent, string instruction, string query, int max
     updateMemory(agent.memory, sessionId, temporaryMemory, agentId);
     if agent.stateless {
         MemoryError? err = agent.memory.delete(sessionId);
-        // Ignore this error since the stateless agent always relies on DefaultMessageWindowChatMemoryManager,  
+        // Ignore this error since the stateless agent always relies on DefaultMessageWindowChatMemoryManager,
         // which never return an error.
     }
-    // Collect all the tool call actions
-    FunctionCall[] toolCalls = from ExecutionStep step in executor.progress.executionSteps
-        let var llmResponse = step.llmResponse
-        where llmResponse is FunctionCall
-        select llmResponse;
-    return {steps, iterations, answer: content, toolCalls};
+    return {steps, iterations, answer: content, toolCalls: collectToolCalls(executor.progress)};
 }
 
-isolated function verbosePrint(ExecutionResult|LlmChatResponse|ExecutionError|Error step, int iter) {
+# Builds the assistant message representing a tool call whose result is not yet available
+# (the resume checkpoint persisted to memory when the agent pauses for human input).
+#
+# + tool - The tool call that triggered the pause
+# + return - An assistant message carrying the single dangling tool call
+isolated function buildDanglingAssistant(LlmToolResponse tool) returns ChatAssistantMessage {
+    FunctionCall functionCall = {name: tool.name, arguments: tool.arguments};
+    string? id = tool.id;
+    if id is string {
+        functionCall.id = id;
+    }
+    return {role: ASSISTANT, toolCalls: [functionCall]};
+}
+
+# Builds the `Interrupt` surfaced to the caller from a tool's human-input request.
+#
+# + sessionId - The session the paused execution belongs to
+# + interrupted - The human-input request and the triggering tool call
+# + return - The interrupt describing what the human must provide
+isolated function buildInterrupt(string sessionId, Interrupted interrupted) returns Interrupt {
+    HumanInput request = interrupted.request;
+    LlmToolResponse tool = interrupted.pendingCall;
+    Interrupt interrupt = {
+        interruptId: uuid:createRandomUuid(),
+        sessionId,
+        toolName: tool.name,
+        toolArguments: tool.arguments,
+        message: request.message
+    };
+    map<json>? responseSchema = request?.responseSchema;
+    if responseSchema is map<json> {
+        interrupt.responseSchema = responseSchema;
+    }
+    map<json>? metadata = request?.metadata;
+    if metadata is map<json> {
+        interrupt.metadata = metadata;
+    }
+    return interrupt;
+}
+
+# Collects the tool calls performed across the execution steps.
+#
+# + progress - The execution progress holding the recorded steps
+# + return - The function calls issued by the agent during this execution
+isolated function collectToolCalls(ExecutionProgress progress) returns FunctionCall[] =>
+    from ExecutionStep step in progress.executionSteps
+    let var llmResponse = step.llmResponse
+    where llmResponse is FunctionCall
+    select llmResponse;
+
+# Resumes a paused agent execution by injecting the human's response as the result of the
+# tool call that triggered the pause, then continuing the reason-act loop.
+#
+# + agent - Agent to be resumed
+# + instruction - Instruction that the agent uses to execute the task
+# + response - The human's response, injected as the paused tool call's result
+# + maxIter - No. of max iterations for the resumed segment of execution
+# + context - Context values to be used by the agent to execute the task
+# + verbose - If true, then print the reasoning steps
+# + agentId - Optional agent identifier used for logging
+# + sessionId - The ID associated with the memory holding the pending interrupt
+# + executionId - Unique identifier for this execution
+# + return - The execution trace, or a `NoPendingInterruptError` if nothing is paused
+isolated function resumeRun(BaseAgent agent, string instruction, HumanResponse response, int maxIter,
+        boolean verbose, string? agentId, string sessionId = DEFAULT_SESSION_ID, Context context = new,
+        string executionId = DEFAULT_EXECUTION_ID) returns ExecutionTrace|Error {
+    log:printDebug("Agent resume loop started",
+        agentId = agentId,
+        executionId = executionId,
+        sessionId = sessionId,
+        maxIterations = maxIter
+    );
+
+    ChatMessage[]|MemoryError prevHistory = agent.memory.get(sessionId);
+    if prevHistory !is ChatMessage[] || prevHistory.length() == 0 {
+        return error NoPendingInterruptError(
+            "No paused execution found for the session to resume.", sessionId = sessionId);
+    }
+    ChatMessage[] history = [...prevHistory];
+
+    // The trailing interactive message must be an assistant message carrying a tool call
+    // whose result is not yet recorded (the dangling checkpoint persisted at pause time).
+    ChatMessage lastMessage = history[history.length() - 1];
+    if lastMessage !is ChatAssistantMessage {
+        return error NoPendingInterruptError(
+            "No pending human-input interrupt found for the session to resume.", sessionId = sessionId);
+    }
+    FunctionCall[]? pendingToolCalls = lastMessage.toolCalls;
+    if pendingToolCalls is () || pendingToolCalls.length() == 0 {
+        return error NoPendingInterruptError(
+            "No pending human-input interrupt found for the session to resume.", sessionId = sessionId);
+    }
+    FunctionCall pendingCall = pendingToolCalls[0];
+
+    // Keep the system message aligned with the current instruction.
+    ChatMessage firstMessage = history[0];
+    if firstMessage is ChatSystemMessage && instruction != toString(firstMessage.content) {
+        history[0] = <ChatSystemMessage>{role: SYSTEM, content: instruction};
+    }
+
+    // Inject the human response as the result of the paused tool call.
+    string responseText = humanResponseToString(response);
+    ChatFunctionMessage humanResultMessage = {role: FUNCTION, name: pendingCall.name, content: responseText};
+    string? id = pendingCall.id;
+    if id is string {
+        humanResultMessage.id = id;
+    }
+    history.push(humanResultMessage);
+
+    // The system, user, completed steps, and the dangling assistant message are already
+    // persisted. Only the injected human result and subsequent steps/answer are new.
+    ChatMessage[] temporaryMemory = [humanResultMessage];
+    Executor executor = new (agent, sessionId,
+        progress = {instruction, query: responseText, context, executionId, history});
+    return executeLoop(agent, executor, history, temporaryMemory, maxIter, verbose, sessionId, agentId, executionId);
+}
+
+# Serializes a human response into the string content of a function-result chat message.
+#
+# + response - The human's response value
+# + return - The string representation injected back into the conversation
+isolated function humanResponseToString(HumanResponse response) returns string {
+    if response is string {
+        return response;
+    }
+    return response.toJsonString();
+}
+
+isolated function verbosePrint(ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error step, int iter) {
     io:println(string `${"\n\n"}Agent Iteration ${iter.toString()}`);
     if step is LlmChatResponse {
         io:println(string `${"\n\n"}Final Answer: ${step.content}${"\n\n"}`);
+        return;
+    }
+    if step is Interrupted {
+        io:println(string `${"\n\n"}Awaiting Human Input: ${step.request.message}${"\n\n"}`);
         return;
     }
     if step is ExecutionResult {
@@ -527,7 +718,7 @@ isolated function verbosePrint(ExecutionResult|LlmChatResponse|ExecutionError|Er
     }
 }
 
-isolated function getOutputOfIteration(ExecutionResult|LlmChatResponse|ExecutionError|Error step)
+isolated function getOutputOfIteration(ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error step)
     returns ChatAssistantMessage|ChatFunctionMessage|Error {
     if step is Error {
         return step;
@@ -537,6 +728,9 @@ isolated function getOutputOfIteration(ExecutionResult|LlmChatResponse|Execution
     }
     if step is ExecutionError {
         return step.'error;
+    }
+    if step is Interrupted {
+        return buildDanglingAssistant(step.pendingCall);
     }
     return {
         role: FUNCTION,

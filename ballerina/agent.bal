@@ -25,6 +25,57 @@ import ballerina/uuid;
 const INFER_TOOL_COUNT = "INFER_TOOL_COUNT";
 const DEFAULT_MINIMUM_MAX_ITERATIONS = 10;
 
+# Returned from the body of an `@ai:AgentTool` function to pause the agent and request
+# human input. When a tool returns this value, the agent suspends execution and surfaces
+# an `Interrupt` to the caller of `run`/`resume`, instead of treating it as a tool result.
+#
+# **Note:** Human-in-the-loop requires the agent to be configured with a `memory`, since the
+# paused state is persisted against the `sessionId`. It cannot be used with a stateless agent.
+@display {label: "Human Input Request"}
+public type HumanInput record {|
+    # The message describing what the human must provide, decide, or approve
+    @display {label: "Message"}
+    string message;
+    # Optional JSON schema describing the shape of the expected human response
+    @display {label: "Response Schema"}
+    map<json> responseSchema?;
+    # Optional caller-defined metadata carried through to the surfaced `Interrupt`
+    @display {label: "Metadata"}
+    map<json> metadata?;
+|};
+
+# Surfaced to the caller of `run` or `resume` when the agent pauses to request human input.
+# The caller obtains the human's response out-of-band and continues the workflow by calling
+# `Agent.resume` with the same `sessionId`.
+@display {label: "Interrupt"}
+public type Interrupt record {|
+    # Unique identifier correlating this pause with its resume
+    @display {label: "Interrupt ID"}
+    string interruptId;
+    # The session the paused execution belongs to
+    @display {label: "Session ID"}
+    string sessionId;
+    # The name of the tool that requested human input
+    @display {label: "Tool Name"}
+    string toolName;
+    # The arguments the agent invoked the tool with
+    @display {label: "Tool Arguments"}
+    map<json>? toolArguments;
+    # The message describing what the human must provide, decide, or approve
+    @display {label: "Message"}
+    string message;
+    # Optional JSON schema describing the shape of the expected human response
+    @display {label: "Response Schema"}
+    map<json> responseSchema?;
+    # Optional caller-defined metadata propagated from the `HumanInput` request
+    @display {label: "Metadata"}
+    map<json> metadata?;
+|};
+
+# Represents the human's reply provided to `Agent.resume`. The value is injected back into
+# the workflow as the result of the tool that requested input.
+public type HumanResponse anydata;
+
 # Represents the system prompt given to the agent.
 @display {label: "System Prompt"}
 public type SystemPrompt record {|
@@ -163,13 +214,65 @@ public isolated distinct class Agent {
     # + sessionId - The ID associated with the agent memory
     # + context - The additional context that can be used during agent tool execution
     # + td - Type descriptor specifying the expected return type format
-    # + return - The agent's response or an error
+    # + return - The agent's response, or an error. If the agent pauses for human input, an
+    #   `InterruptError` (carrying an `Interrupt`) is returned in string mode; in `Trace` mode
+    #   the returned trace carries the `interrupt` field. Continue the workflow with `resume`.
     public isolated function run(@display {label: "Query"} string query,
             @display {label: "Session ID"} string sessionId = DEFAULT_SESSION_ID,
             Context context = new,
             typedesc<Trace|string> td = <>) returns td|Error = @java:Method {
         'class: "io.ballerina.stdlib.ai.Agent"
     } external;
+
+    # Resumes a paused agent execution after a human-in-the-loop interrupt.
+    #
+    # **Note:** Calls to this function using the same session ID must be invoked sequentially by the caller,
+    # as this operation is not thread-safe.
+    #
+    # + sessionId - The ID associated with the agent memory that has a pending interrupt
+    # + response - The human's response, injected as the result of the tool that requested input
+    # + context - The additional context that can be used during agent tool execution
+    # + td - Type descriptor specifying the expected return type format
+    # + return - The agent's response, or an error. If the agent pauses again, an
+    #   `InterruptError` is returned in string mode, or a `Trace` carrying the `interrupt`
+    #   field in `Trace` mode.
+    public isolated function resume(@display {label: "Session ID"} string sessionId,
+            @display {label: "Human Response"} HumanResponse response,
+            Context context = new,
+            typedesc<Trace|string> td = <>) returns td|Error = @java:Method {
+        'class: "io.ballerina.stdlib.ai.Agent"
+    } external;
+
+    # Handles a single chat turn with automatic Human-in-the-Loop support: resumes the agent if
+    # the session is awaiting a human response, otherwise starts a new turn. If the agent pauses,
+    # the returned message carries the `interrupt` so the caller/UI can prompt the user; the next
+    # call with the human's reply resumes automatically. This is a convenience wrapper over `run`
+    # and `resume` for chat services.
+    #
+    # **Note:** Calls to this function using the same session ID must be invoked sequentially by the
+    # caller, as this operation is not thread-safe.
+    #
+    # + request - The incoming chat request containing the session ID and the user message
+    # + context - The additional context that can be used during agent tool execution
+    # + return - The chat response, with `interrupt` set when the agent paused, or an error
+    public isolated function chat(@display {label: "Chat Request"} ChatReqMessage request,
+            Context context = new) returns ChatRespMessage|Error {
+        string sessionId = request.sessionId;
+        // Resume if the session is paused awaiting a human response; otherwise start a new turn.
+        // `resume` returns `NoPendingInterruptError` (with no side effects) when nothing is paused.
+        string|Error result = self.resume(sessionId, request.message, context);
+        if result is NoPendingInterruptError {
+            result = self.run(request.message, sessionId, context);
+        }
+        if result is InterruptError {
+            Interrupt interrupt = result.detail().interrupt;
+            return {message: interrupt.message, interrupt};
+        }
+        if result is Error {
+            return result;
+        }
+        return {message: result};
+    }
 
     private isolated function runInternal(@display {label: "Query"} string query,
             @display {label: "Session ID"} string sessionId = DEFAULT_SESSION_ID,
@@ -195,6 +298,31 @@ public isolated distinct class Agent {
         ChatUserMessage userMessage = {role: USER, content: query};
         Iteration[] iterations = executionTrace.iterations;
         FunctionCall[]? toolCalls = executionTrace.toolCalls.length() == 0 ? () : executionTrace.toolCalls;
+        Interrupt? interrupt = executionTrace.interrupt;
+        if interrupt is Interrupt {
+            log:printDebug("Agent execution paused awaiting human input",
+                    executionId = executionId,
+                    agentId = self.agentId,
+                    sessionId = sessionId,
+                    interruptId = interrupt.interruptId
+            );
+            span.addOutput(observe:TEXT, interrupt.message);
+            span.close();
+            if withTrace {
+                return {
+                    id: executionId,
+                    userMessage,
+                    iterations,
+                    tools: self.toolSchemas,
+                    startTime,
+                    endTime: time:utcNow(),
+                    output: {role: ASSISTANT, content: interrupt.message},
+                    toolCalls,
+                    interrupt
+                };
+            }
+            return error InterruptError(interrupt.message, interrupt = interrupt);
+        }
         do {
             string answer = check getAnswer(executionTrace, self.maxIter);
             log:printDebug("Agent execution completed successfully",
@@ -227,6 +355,109 @@ public isolated distinct class Agent {
             );
             span.close(err);
 
+            return withTrace
+                ? {
+                    id: executionId,
+                    userMessage,
+                    iterations,
+                    tools: self.toolSchemas,
+                    startTime,
+                    endTime: time:utcNow(),
+                    output: err,
+                    toolCalls
+                }
+                : err;
+        }
+    }
+
+    private isolated function resumeInternal(@display {label: "Session ID"} string sessionId,
+            HumanResponse response, Context context = new, boolean withTrace = false)
+            returns string|Trace|Error {
+        time:Utc startTime = time:utcNow();
+        string executionId = uuid:createRandomUuid();
+        string responseText = humanResponseToString(response);
+        log:printDebug("Agent resume started",
+                executionId = executionId,
+                agentId = self.agentId,
+                sessionId = sessionId
+        );
+
+        observe:InvokeAgentSpan span = observe:createInvokeAgentSpan(self.systemPrompt.role);
+        span.addId(self.uniqueId);
+        span.addSessionId(sessionId);
+        span.addInput(responseText);
+        string systemPrompt = getFomatedSystemPrompt(self.systemPrompt);
+        span.addSystemInstruction(systemPrompt);
+
+        ExecutionTrace|Error executionTraceResult = self.functionCallAgent
+            .resume(systemPrompt, response, self.maxIter, self.verbose, sessionId, context, executionId);
+        if executionTraceResult is Error {
+            log:printDebug("Agent resume failed",
+                    executionTraceResult,
+                    executionId = executionId,
+                    agentId = self.agentId,
+                    sessionId = sessionId
+            );
+            span.close(executionTraceResult);
+            return executionTraceResult;
+        }
+        ExecutionTrace executionTrace = executionTraceResult;
+        ChatUserMessage userMessage = {role: USER, content: responseText};
+        Iteration[] iterations = executionTrace.iterations;
+        FunctionCall[]? toolCalls = executionTrace.toolCalls.length() == 0 ? () : executionTrace.toolCalls;
+        Interrupt? interrupt = executionTrace.interrupt;
+        if interrupt is Interrupt {
+            log:printDebug("Agent resume paused awaiting human input",
+                    executionId = executionId,
+                    agentId = self.agentId,
+                    sessionId = sessionId,
+                    interruptId = interrupt.interruptId
+            );
+            span.addOutput(observe:TEXT, interrupt.message);
+            span.close();
+            if withTrace {
+                return {
+                    id: executionId,
+                    userMessage,
+                    iterations,
+                    tools: self.toolSchemas,
+                    startTime,
+                    endTime: time:utcNow(),
+                    output: {role: ASSISTANT, content: interrupt.message},
+                    toolCalls,
+                    interrupt
+                };
+            }
+            return error InterruptError(interrupt.message, interrupt = interrupt);
+        }
+        do {
+            string answer = check getAnswer(executionTrace, self.maxIter);
+            log:printDebug("Agent resume completed successfully",
+                    executionId = executionId,
+                    agentId = self.agentId,
+                    answer = answer
+            );
+            span.addOutput(observe:TEXT, answer);
+            span.close();
+            return withTrace
+                ? {
+                    id: executionId,
+                    userMessage,
+                    iterations,
+                    tools: self.toolSchemas,
+                    startTime,
+                    endTime: time:utcNow(),
+                    output: {role: ASSISTANT, content: answer},
+                    toolCalls
+                }
+                : answer;
+        } on fail Error err {
+            log:printDebug("Agent resume failed",
+                    err,
+                    executionId = executionId,
+                    agentId = self.agentId
+            );
+            span.close(err);
             return withTrace
                 ? {
                     id: executionId,

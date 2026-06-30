@@ -25,6 +25,15 @@ public type ToolExecutionResult record {|
     any|error result;
 |};
 
+# Represents the outcome of a tool that requested human input by returning a `HumanInput`
+# value, signalling the agent to pause execution.
+public type Interrupted record {|
+    # The human-input request returned by the tool
+    HumanInput request;
+    # The tool call (name and arguments) that triggered the pause
+    LlmToolResponse pendingCall;
+|};
+
 # This is the tool used by LLMs during reasoning.
 # This tool is same as the Tool record, but it has a clear separation between the variables that should be generated with the help of the LLMs and the constants that are defined by the users. 
 public type Tool record {|

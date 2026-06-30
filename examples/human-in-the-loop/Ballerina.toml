@@ -1,0 +1,16 @@
+[package]
+org = "agent"
+name = "human_in_the_loop"
+version = "0.1.0"
+distribution = "2201.12.0"
+
+[build-options]
+observabilityIncluded = true
+
+# Uses the locally published `ballerina/ai` build that includes Human-in-the-Loop support.
+# Publish it first with:  cd ../../ballerina && bal pack && bal push --repository=local
+[[dependency]]
+org = "ballerina"
+name = "ai"
+version = "1.11.2"
+repository = "local"

@@ -193,6 +193,13 @@ public isolated class ShortTermMemory {
 
             ChatMessage[] combined = [...existing, ...incomingInteractiveMsgs.clone()];
             combined = totalRemovals > 0 ? combined.slice(totalRemovals) : combined;
+            // Pairing-aware trim: a function (tool-result) message must always be preceded by
+            // its assistant tool-call message. If front-trimming left an orphaned function
+            // message at the head (e.g. across a human-in-the-loop pause/resume), drop it so
+            // the persisted sequence stays valid for the model provider.
+            while combined.length() > 0 && combined[0] is ChatFunctionMessage {
+                combined = combined.slice(1);
+            }
             return combined.'map(msg => check mapToMemoryChatMessage(msg)).clone();
         }
     }

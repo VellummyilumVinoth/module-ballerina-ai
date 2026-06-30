@@ -147,6 +147,23 @@ isolated distinct class FunctionCallAgent {
         string? agentId = agentConfig is Credential ? agentConfig.id : ();
         return run(self, instruction, query, maxIter, verbose, agentId, sessionId, context, executionId);
     }
+
+    # Resumes a paused execution after a human-in-the-loop interrupt.
+    #
+    # + instruction - Instruction to the agent on how to process the query
+    # + response - The human's response, injected as the result of the paused tool call
+    # + maxIter - No. of max iterations that agent will run to complete the resumed task
+    # + verbose - If true, then print the reasoning steps
+    # + sessionId - The ID associated with the agent memory holding the pending interrupt
+    # + executionId - Unique identifier for this execution
+    # + return - The execution trace, or an error if there is no pending interrupt to resume
+    isolated function resume(string instruction, HumanResponse response, int maxIter = 5, boolean verbose = true,
+            string sessionId = DEFAULT_SESSION_ID, Context context = new, string executionId = DEFAULT_EXECUTION_ID)
+            returns ExecutionTrace|Error {
+        Credential? & readonly agentConfig = self.agentCredential;
+        string? agentId = agentConfig is Credential ? agentConfig.id : ();
+        return resumeRun(self, instruction, response, maxIter, verbose, agentId, sessionId, context, executionId);
+    }
 }
 
 isolated function createFunctionCallMessages(ExecutionProgress progress) returns ChatMessage[] {

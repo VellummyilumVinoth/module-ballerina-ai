@@ -42,11 +42,11 @@ function testAgentExecutorRun() returns error? {
         instruction = "Answer the questions", query = query, context = new, executionId = DEFAULT_EXECUTION_ID,
         history = []
     );
-    record {|ExecutionResult|LlmChatResponse|ExecutionError|Error value;|}? result = agentExecutor.next();
+    record {|ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error value;|}? result = agentExecutor.next();
     if result is () {
         test:assertFail("AgentExecutor.next returns an null during first iteration");
     }
-    ExecutionResult|LlmChatResponse|ExecutionError|Error output = result.value;
+    ExecutionResult|LlmChatResponse|ExecutionError|Interrupted|Error output = result.value;
     if output is Error {
         test:assertFail("AgentExecutor.next returns an error during first iteration");
     }
