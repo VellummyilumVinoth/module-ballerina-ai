@@ -92,5 +92,12 @@ public type InsufficientScopeError distinct TokenValidationError;
 # Represents an error that occurs when the maximum number of iterations has been exceeded.
 public type MaxIterationExceededError distinct (Error & error<record {|(ExecutionResult|ExecutionError|Error)[] steps;|}>);
 
-# Represents errors that occur during memory-related operations.  
+# Represents errors that occur during memory-related operations.
 public type MemoryError distinct Error;
+
+# Errors related to webhook trigger initialization or processing.
+public type TriggerError distinct Error;
+
+# Errors during WhatsApp webhook trigger initialization.
+public type WhatsAppTriggerError distinct TriggerError;
+

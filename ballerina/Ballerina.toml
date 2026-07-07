@@ -14,6 +14,13 @@ name = "ai.observe"
 description="This module provides an API for adding observability to AI applications."
 export=true
 
+# WhatsApp Business Cloud connector, wrapped by ai:WhatsAppListener for the WhatsApp trigger.
+[[dependency]]
+org = "ballerinax"
+name = "whatsapp.business.cloud"
+version = "0.1.0"
+repository = "local"
+
 [platform.java21]
 graalvmCompatible = true
 
